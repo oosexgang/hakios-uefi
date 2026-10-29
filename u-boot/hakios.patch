@@ -18,14 +18,14 @@ index c71c6824..02ed027c 100644
  	bool "bootefi"
  	depends on EFI_LOADER
 diff --git a/cmd/Makefile b/cmd/Makefile
-index bbbdfcc4..3b9ad787 100644
+index bbbdfcc4..3839d1dd 100644
 --- a/cmd/Makefile
 +++ b/cmd/Makefile
 @@ -35,6 +35,7 @@ obj-$(CONFIG_CMD_BLOCK_CACHE) += blkcache.o
  obj-$(CONFIG_CMD_BMP) += bmp.o
  obj-$(CONFIG_CMD_BOOTCOUNT) += bootcount.o
  obj-$(CONFIG_CMD_BOOTEFI) += bootefi.o
-+obj-$(CONFIG_CMD_HAKIOS) += hakios.o
++obj-$(CONFIG_CMD_HAKIOS) += hakios.o hakios_slot.o
  obj-$(CONFIG_CMD_BOOTMENU) += bootmenu.o
  obj-$(CONFIG_CMD_BOOTSTAGE) += bootstage.o
  obj-$(CONFIG_CMD_BOOTZ) += bootz.o

@@ -19,7 +19,8 @@
  *   HKUB container, little-endian:
  *     u32 magic "HKUB", u32 version (1), u32 count, u32 header size
  *     count x { char name[16]; u32 offset; u32 size; u32 crc32; u32 reserved; }   offsets from the container's start
- *   entries: "loader" (loader.efi), "payload" (XNUP)
+ *   entries: "loader" (loader.efi), "payload" (XNUP), "env" (text, name=value lines: what this image makes U-Boot do,
+ *   e.g. the menu of an installed HakiOS; imported over the environment built in)
  */
 
 #include <command.h>
@@ -37,6 +38,7 @@
 #include <linux/libfdt.h>
 #include <linux/sizes.h>
 #include <linux/string.h>
+#include "hakios.h"
 
 #define PAYLOAD_BASE		0xF0000000UL
 #define PAYLOAD_MAX		(SZ_64M - SZ_1M)	/* the last MiB of the 64 is the kernel's panic log */
@@ -163,6 +165,19 @@ static int take_payload(const void *data, ulong size)
 	return 0;
 }
 
+static int take_env(const void *data, ulong size)
+{
+	char cmd[64];
+
+	snprintf(cmd, sizeof(cmd), "env import -t %lx %lx", (ulong)map_to_sysmem(data), size);
+	if (run_command(cmd, 0)) {
+		printf("[oosexgang] hakios: the image's environment was not taken\n");
+		return -EINVAL;
+	}
+	printf("[oosexgang] hakios: environment of %lu bytes from the image\n", size);
+	return 0;
+}
+
 static int take_container(const u8 *data, ulong size)
 {
 	const struct hkub_header *h = (const void *)data;
@@ -193,6 +208,8 @@ static int take_container(const u8 *data, ulong size)
 			ret = take_loader(p, e->size);
 		else if (!strcmp(name, "payload"))
 			ret = take_payload(p, e->size);
+		else if (!strcmp(name, "env"))
+			ret = take_env(p, e->size);
 		else
 			printf("[oosexgang] hakios: %s skipped\n", name);
 	}
@@ -222,6 +239,9 @@ static int do_hakios_load(struct cmd_tbl *cmdtp, int flag, int argc, char *const
 	const void *data;
 	u32 magic;
 
+	/* what bootcmd runs once this has taken an image: the loader, unless the image's own environment says otherwise */
+	if (!env_get("hakios_start"))
+		env_set("hakios_start", "hakios boot");
 	if (argc >= 3) {
 		addr = hextoul(argv[1], NULL);
 		size = hextoul(argv[2], NULL);
@@ -290,10 +310,16 @@ static int do_hakios_info(struct cmd_tbl *cmdtp, int flag, int argc, char *const
 	return CMD_RET_SUCCESS;
 }
 
+static int do_hakios_slot(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
+{
+	return hakios_slot(argc, argv) ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
+}
+
 static struct cmd_tbl cmd_hakios_sub[] = {
 	U_BOOT_CMD_MKENT(load, 3, 0, do_hakios_load, "", ""),
 	U_BOOT_CMD_MKENT(boot, 1, 0, do_hakios_boot, "", ""),
 	U_BOOT_CMD_MKENT(info, 1, 0, do_hakios_info, "", ""),
+	U_BOOT_CMD_MKENT(slot, 2, 0, do_hakios_slot, "", ""),
 };
 
 static int do_hakios(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
@@ -313,5 +339,6 @@ U_BOOT_CMD(hakios, 4, 0, do_hakios,
 	"load [fastboot | addr [size]] - take an HKUB container, an XNUP payload or loader.efi\n"
 	"    (default: ABL's ramdisk; fastboot: what fastboot stage sent last)\n"
 	"hakios boot - start the loader (bootefi), with the payload at 0xf0000000\n"
-	"hakios info - what is in memory"
+	"hakios info - what is in memory\n"
+	"hakios slot [a | b | successful] - Qualcomm's A/B slots: show them, make one active, mark the active one successful"
 );

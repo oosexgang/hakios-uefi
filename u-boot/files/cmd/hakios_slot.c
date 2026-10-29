@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * hakios slot: Qualcomm's A/B slots, as ABL keeps them, read and changed from U-Boot.
+ *
+ * ABL boots the slot whose boot partition's GPT entry has the "active" bit, and keeps the slot's state in the other
+ * bits of the same attributes (ABL's QcomModulePkg/Include/Library/PartitionTableUpdate.h): a priority, a retry count
+ * that each boot of a slot not yet marked successful uses up, "successful" and "unbootable". `fastboot set_active` and
+ * Android's boot control HAL change these bits and nothing else; so does this.
+ *
+ * HakiOS installed beside Android lives in the slot Android does not run from: U-Boot in its boot partition, with a
+ * menu. Its "Android" entry makes Android's slot the active one and resets, as `fastboot set_active` would; and every
+ * start of U-Boot marks its own slot successful, so that ABL does not give up on it after seven boots.
+ *
+ * What is written is the attributes of boot_a and boot_b, in both copies of the table of the disk they are on, with
+ * the CRCs that cover them. Both copies are read and checked first and must agree; everything written is read back
+ * and checked; no other byte of the table changes.
+ */
+
+#include <blk.h>
+#include <command.h>
+#include <dm.h>
+#include <malloc.h>
+#include <memalign.h>
+#include <part_efi.h>
+#include <u-boot/crc.h>
+#include <linux/bitops.h>
+#include <linux/errno.h>
+#include <linux/string.h>
+#include "hakios.h"
+
+#define SLOT_PRIORITY_SHIFT	48
+#define SLOT_PRIORITY		(3ULL << SLOT_PRIORITY_SHIFT)
+#define SLOT_ACTIVE		BIT_ULL(50)
+#define SLOT_RETRY_SHIFT	51
+#define SLOT_RETRY		(7ULL << SLOT_RETRY_SHIFT)
+#define SLOT_SUCCESSFUL		BIT_ULL(54)
+#define SLOT_UNBOOTABLE		BIT_ULL(55)
+
+struct gpt_copy {
+	lbaint_t lba;			/* of the header */
+	gpt_header *h;			/* a block */
+	gpt_entry *e;
+	lbaint_t e_blocks;
+};
+
+struct slot_table {
+	struct blk_desc *desc;
+	struct gpt_copy copy[2];	/* primary, backup */
+	int idx[2];			/* boot_a, boot_b */
+};
+
+static const char *const slot_part[2] = { "boot_a", "boot_b" };
+
+static void gpt_free(struct gpt_copy *c)
+{
+	free(c->h);
+	free(c->e);
+	c->h = NULL;
+	c->e = NULL;
+}
+
+static int gpt_read(struct blk_desc *desc, lbaint_t lba, struct gpt_copy *c)
+{
+	ulong bs = desc->blksz;
+	u32 crc, bytes;
+
+	c->lba = lba;
+	c->h = memalign(ARCH_DMA_MINALIGN, bs);
+	c->e = NULL;
+	if (!c->h || blk_dread(desc, lba, 1, c->h) != 1)
+		return -EIO;
+	if (le64_to_cpu(c->h->signature) != GPT_HEADER_SIGNATURE_UBOOT ||
+	    le32_to_cpu(c->h->header_size) < sizeof(gpt_header) || le32_to_cpu(c->h->header_size) > bs ||
+	    le32_to_cpu(c->h->sizeof_partition_entry) != sizeof(gpt_entry) ||
+	    le64_to_cpu(c->h->my_lba) != lba)
+		return -EINVAL;
+	crc = le32_to_cpu(c->h->header_crc32);
+	c->h->header_crc32 = 0;
+	if (crc32(0, (void *)c->h, le32_to_cpu(c->h->header_size)) != crc)
+		return -EBADMSG;
+	c->h->header_crc32 = cpu_to_le32(crc);
+	bytes = le32_to_cpu(c->h->num_partition_entries) * sizeof(gpt_entry);
+	if (!bytes || bytes > 1024 * sizeof(gpt_entry))
+		return -EINVAL;
+	c->e_blocks = DIV_ROUND_UP(bytes, bs);
+	c->e = memalign(ARCH_DMA_MINALIGN, c->e_blocks * bs);
+	if (!c->e || blk_dread(desc, le64_to_cpu(c->h->partition_entry_lba), c->e_blocks, c->e) != c->e_blocks)
+		return -EIO;
+	if (crc32(0, (void *)c->e, bytes) != le32_to_cpu(c->h->partition_entry_array_crc32))
+		return -EBADMSG;
+	return 0;
+}
+
+static bool name_is(const gpt_entry *e, const char *name)
+{
+	int i;
+
+	for (i = 0; name[i]; i++)
+		if (i >= PARTNAME_SZ || le16_to_cpu(e->partition_name[i]) != (u8)name[i])
+			return false;
+	return i == PARTNAME_SZ || !e->partition_name[i];
+}
+
+static void slot_tables_free(struct slot_table *t)
+{
+	gpt_free(&t->copy[0]);
+	gpt_free(&t->copy[1]);
+}
+
+/* the disk with boot_a and boot_b, both copies of its table read and checked and the same */
+static int slot_tables_find(struct slot_table *t)
+{
+	struct udevice *dev;
+
+	uclass_foreach_dev_probe(UCLASS_BLK, dev) {
+		struct blk_desc *desc = dev_get_uclass_plat(dev);
+		gpt_header *p;
+		u32 n, bytes;
+
+		memset(t, 0, sizeof(*t));
+		t->desc = desc;
+		if (gpt_read(desc, 1, &t->copy[0])) {
+			slot_tables_free(t);
+			continue;
+		}
+		p = t->copy[0].h;
+		n = le32_to_cpu(p->num_partition_entries);
+		t->idx[0] = t->idx[1] = -1;
+		for (u32 i = 0; i < n; i++)
+			for (int s = 0; s < 2; s++)
+				if (name_is(&t->copy[0].e[i], slot_part[s]))
+					t->idx[s] = i;
+		if (t->idx[0] < 0 || t->idx[1] < 0) {
+			slot_tables_free(t);
+			continue;
+		}
+		if (gpt_read(desc, le64_to_cpu(p->alternate_lba), &t->copy[1])) {
+			printf("hakios: %s: the backup table does not check out: not touched\n", dev->name);
+			slot_tables_free(t);
+			return -EBADMSG;
+		}
+		bytes = n * sizeof(gpt_entry);
+		if (le32_to_cpu(t->copy[1].h->num_partition_entries) != n ||
+		    memcmp(t->copy[0].e, t->copy[1].e, bytes)) {
+			printf("hakios: %s: the two copies of the table differ: not touched\n", dev->name);
+			slot_tables_free(t);
+			return -EBADMSG;
+		}
+		return 0;
+	}
+	printf("hakios: no disk with boot_a and boot_b\n");
+	return -ENODEV;
+}
+
+static u64 attr_get(const gpt_entry *e)
+{
+	return le64_to_cpu(e->attributes.raw);
+}
+
+static void attr_set(gpt_entry *e, u64 v)
+{
+	e->attributes.raw = cpu_to_le64(v);
+}
+
+static void slot_print(const struct slot_table *t)
+{
+	for (int s = 0; s < 2; s++) {
+		u64 a = attr_get(&t->copy[0].e[t->idx[s]]);
+
+		printf("slot %c: %s, priority %llu, retries %llu%s%s\n", 'a' + s, a & SLOT_ACTIVE ? "active" : "inactive",
+		       (a & SLOT_PRIORITY) >> SLOT_PRIORITY_SHIFT, (a & SLOT_RETRY) >> SLOT_RETRY_SHIFT,
+		       a & SLOT_SUCCESSFUL ? ", successful" : "", a & SLOT_UNBOOTABLE ? ", UNBOOTABLE" : "");
+	}
+}
+
+/* both copies, entries then header, each read back */
+static int slot_tables_write(struct slot_table *t)
+{
+	struct blk_desc *desc = t->desc;
+	u32 bytes = le32_to_cpu(t->copy[0].h->num_partition_entries) * sizeof(gpt_entry);
+
+	for (int c = 0; c < 2; c++) {
+		struct gpt_copy *g = &t->copy[c];
+		struct gpt_copy check = {};
+		int ret;
+
+		if (c)
+			memcpy(g->e, t->copy[0].e, bytes);
+		g->h->partition_entry_array_crc32 = cpu_to_le32(crc32(0, (void *)g->e, bytes));
+		g->h->header_crc32 = 0;
+		g->h->header_crc32 = cpu_to_le32(crc32(0, (void *)g->h, le32_to_cpu(g->h->header_size)));
+		if (blk_dwrite(desc, le64_to_cpu(g->h->partition_entry_lba), g->e_blocks, g->e) != g->e_blocks ||
+		    blk_dwrite(desc, g->lba, 1, g->h) != 1) {
+			printf("hakios: writing the %s table failed\n", c ? "backup" : "primary");
+			return -EIO;
+		}
+		ret = gpt_read(desc, g->lba, &check);
+		if (!ret && memcmp(check.e, g->e, bytes))
+			ret = -EIO;
+		gpt_free(&check);
+		if (ret) {
+			printf("hakios: the %s table read back is not what was written (%d)\n", c ? "backup" : "primary",
+			       ret);
+			return ret;
+		}
+	}
+	return 0;
+}
+
+int hakios_slot(int argc, char *const argv[])
+{
+	struct slot_table t;
+	gpt_entry *e[2];
+	u64 a[2], was[2];
+	int ret, s;
+
+	ret = slot_tables_find(&t);
+	if (ret)
+		return ret;
+	e[0] = &t.copy[0].e[t.idx[0]];
+	e[1] = &t.copy[0].e[t.idx[1]];
+	if (argc < 2) {
+		slot_print(&t);
+		slot_tables_free(&t);
+		return 0;
+	}
+	was[0] = a[0] = attr_get(e[0]);
+	was[1] = a[1] = attr_get(e[1]);
+	if (!strcmp(argv[1], "successful")) {
+		s = a[0] & SLOT_ACTIVE ? 0 : a[1] & SLOT_ACTIVE ? 1 : -1;
+		if (s < 0) {
+			printf("hakios: no slot is active\n");
+			slot_tables_free(&t);
+			return -EINVAL;
+		}
+		a[s] |= SLOT_SUCCESSFUL;
+	} else if ((argv[1][0] == 'a' || argv[1][0] == 'b') && !argv[1][1]) {
+		/* as ABL's set_active: the new slot first in priority, with all its retries; the other one second */
+		s = argv[1][0] - 'a';
+		a[s] = (a[s] & ~(SLOT_PRIORITY | SLOT_UNBOOTABLE)) | SLOT_PRIORITY | SLOT_ACTIVE | SLOT_RETRY;
+		a[!s] = (a[!s] & ~(SLOT_PRIORITY | SLOT_ACTIVE)) | (2ULL << SLOT_PRIORITY_SHIFT);
+	} else {
+		slot_tables_free(&t);
+		return -EINVAL;
+	}
+	if (a[0] == was[0] && a[1] == was[1]) {
+		slot_print(&t);
+		slot_tables_free(&t);
+		return 0;
+	}
+	attr_set(e[0], a[0]);
+	attr_set(e[1], a[1]);
+	ret = slot_tables_write(&t);
+	if (!ret) {
+		printf("[oosexgang] hakios: slots changed\n");
+		slot_print(&t);
+	}
+	slot_tables_free(&t);
+	return ret;
+}
