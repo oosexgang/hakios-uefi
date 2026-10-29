@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * hakios slot: Qualcomm's A/B slots, as ABL keeps them, read and changed from U-Boot.
+ * hakios slot: Qualcomm's A/B slots, as ABL keeps them: read, and the active slot's own state changed. Never which slot
+ * is active.
  *
- * ABL boots the slot whose boot partition's GPT entry has the "active" bit, and keeps the slot's state in the other
- * bits of the same attributes (ABL's QcomModulePkg/Include/Library/PartitionTableUpdate.h): a priority, a retry count
- * that each boot of a slot not yet marked successful uses up, "successful" and "unbootable". `fastboot set_active` and
- * Android's boot control HAL change these bits and nothing else; so does this.
+ * ABL boots the slot whose boot partition's GPT entry has the "active" bit (with the highest priority), and keeps the
+ * slot's state in the other bits of the same attributes (ABL's PartitionTableUpdate.h): a priority, a retry count
+ * that each boot of a slot not yet marked successful uses up, "successful" and "unbootable".
  *
- * HakiOS installed beside Android lives in the slot Android does not run from: U-Boot in its boot partition, with a
- * menu. Its "Android" entry makes Android's slot the active one and resets, as `fastboot set_active` would; and every
- * start of U-Boot marks its own slot successful, so that ABL does not give up on it after seven boots.
+ * WHICH slot is active is not these bits alone. ABL's SetActiveSlot() also swaps the type GUIDs of every _a/_b pair on
+ * every unit (the active slot's partitions carry the real types, the other's 77036cd4-..., which the loaders before ABL
+ * go by) and switches the UFS boot LUN (1 for a, 2 for b); at every boot ValidateSlotGuids() refuses a slot whose
+ * boot_X and abl_X carry the same GUID, or whose LUN does not match, with "Device Error". An earlier version of this
+ * changed the active bit alone: the bits and the GUIDs then disagreed, no ABL command could bring them together again
+ * (each swaps both), and the phone started nothing until the unit's own table was written back (`fastboot flash
+ * partition:4`, from tools/backup-partitions.py's copy). So only ABL and Android's boot control HAL change the active
+ * slot. What this does is what ABL itself does to the active slot's bits: "successful" (every start of U-Boot, so that
+ * ABL does not give up on it after seven boots), and "unbootable" (the menu's "Android": ABL then finds the active slot
+ * unbootable and makes the other one active itself, HandleActiveSlotUnbootable(), GUIDs and LUN with it).
  *
- * What is written is the attributes of boot_a and boot_b, in both copies of the table of the disk they are on, with
- * the CRCs that cover them. Both copies are read and checked first and must agree; everything written is read back
+ * What is written is the attributes of the active slot's boot entry, in both copies of the table of the disk it is on,
+ * with the CRCs that cover them. Both copies are read and checked first and must agree; everything written is read back
  * and checked; no other byte of the table changes.
  */
 
@@ -24,6 +31,7 @@
 #include <part.h>
 #include <part_efi.h>
 #include <sysreset.h>
+#include <asm/io.h>
 #include <power/pmic.h>
 #include <u-boot/sha256.h>
 #include <u-boot/crc.h>
@@ -79,7 +87,8 @@ static int gpt_read(struct blk_desc *desc, lbaint_t lba, struct gpt_copy *c)
 	if (le64_to_cpu(c->h->signature) != GPT_HEADER_SIGNATURE_UBOOT ||
 	    le32_to_cpu(c->h->header_size) < sizeof(gpt_header) || le32_to_cpu(c->h->header_size) > bs ||
 	    le32_to_cpu(c->h->sizeof_partition_entry) != sizeof(gpt_entry) ||
-	    le64_to_cpu(c->h->my_lba) != lba)
+	    /* (a backup written by ABL's `fastboot flash partition:N` says it is at LBA 1: ABL's PatchGpt() puts 1 there) */
+	    (le64_to_cpu(c->h->my_lba) != lba && !(lba != 1 && le64_to_cpu(c->h->my_lba) == 1)))
 		return -EINVAL;
 	crc = le32_to_cpu(c->h->header_crc32);
 	c->h->header_crc32 = 0;
@@ -233,20 +242,25 @@ int hakios_slot(int argc, char *const argv[])
 	}
 	was[0] = a[0] = attr_get(e[0]);
 	was[1] = a[1] = attr_get(e[1]);
+	s = a[0] & SLOT_ACTIVE ? 0 : a[1] & SLOT_ACTIVE ? 1 : -1;
+	if (s < 0 || (a[!s] & SLOT_ACTIVE)) {
+		printf("hakios: not exactly one slot is active: nothing changed\n");
+		slot_tables_free(&t);
+		return -EINVAL;
+	}
 	if (!strcmp(argv[1], "successful")) {
-		s = a[0] & SLOT_ACTIVE ? 0 : a[1] & SLOT_ACTIVE ? 1 : -1;
-		if (s < 0) {
-			printf("hakios: no slot is active\n");
+		a[s] = (a[s] | SLOT_SUCCESSFUL) & ~SLOT_UNBOOTABLE;
+	} else if (!strcmp(argv[1], "unbootable")) {
+		/* as ABL's HandleActiveSlotUnbootable(): the next start, ABL makes the other slot active itself */
+		if (!(a[!s] & SLOT_SUCCESSFUL) || (a[!s] & SLOT_UNBOOTABLE)) {
+			printf("hakios: slot %c is not marked successful: ABL would have no slot to go to; nothing changed\n",
+			       'a' + !s);
 			slot_tables_free(&t);
 			return -EINVAL;
 		}
-		a[s] |= SLOT_SUCCESSFUL;
-	} else if ((argv[1][0] == 'a' || argv[1][0] == 'b') && !argv[1][1]) {
-		/* as ABL's set_active: the new slot first in priority, with all its retries; the other one second */
-		s = argv[1][0] - 'a';
-		a[s] = (a[s] & ~(SLOT_PRIORITY | SLOT_UNBOOTABLE)) | SLOT_PRIORITY | SLOT_ACTIVE | SLOT_RETRY;
-		a[!s] = (a[!s] & ~(SLOT_PRIORITY | SLOT_ACTIVE)) | (2ULL << SLOT_PRIORITY_SHIFT);
+		a[s] = (a[s] | SLOT_UNBOOTABLE) & ~SLOT_SUCCESSFUL;
 	} else {
+		printf("hakios: which slot is active is ABL's to change (fastboot set_active) or Android's (bootctl)\n");
 		slot_tables_free(&t);
 		return -EINVAL;
 	}
@@ -332,33 +346,31 @@ int hakios_sum(int argc, char *const argv[])
 }
 
 /*
- * hakios bootloader: restart into ABL's fastboot, as Linux's `reboot bootloader` does: the reason, 2, in bits 1..7 of
- * the PMK8350's SDAM 2 at 0x48 (the reboot-mode cell of upstream's pmk8350.dtsi), which ABL reads at the next start.
+ * hakios reboot [bootloader]: restart the way Linux does on Qualcomm phones, saying why where ABL looks: the restart
+ * reason in IMEM (0x146AA65C, downstream's qcom,msm-imem-restart_reason) and the reboot-mode cell of the PMK8350 (SDAM 2
+ * + 0x48, bits 1..7, upstream's pmk8350.dtsi). U-Boot's own reset says nothing: a reason left there by an earlier
+ * `reboot bootloader` stayed, and ABL went on into its fastboot instead of starting Android (seen on the phone).
  */
+#define IMEM_RESTART_REASON	0x146AA65C
+#define RESTART_NORMAL		0x77665501
+#define RESTART_BOOTLOADER	0x77665500
 #define REBOOT_REASON_REG	0x7148
 #define REBOOT_BOOTLOADER	0x02
 
-int hakios_bootloader(void)
+int hakios_reboot(bool bootloader)
 {
 	struct udevice *pmic;
 	int v, ret;
 
-	if (!IS_ENABLED(CONFIG_DM_PMIC)) {
-		printf("hakios: no PMIC support here\n");
-		return -ENOSYS;
+	if (IS_ENABLED(CONFIG_ARCH_SNAPDRAGON))
+		writel(bootloader ? RESTART_BOOTLOADER : RESTART_NORMAL, (void *)IMEM_RESTART_REASON);
+	if (IS_ENABLED(CONFIG_ARCH_SNAPDRAGON) && IS_ENABLED(CONFIG_DM_PMIC)) {
+		ret = uclass_get_device_by_name(UCLASS_PMIC, "pmic@0", &pmic);
+		v = ret ? ret : pmic_reg_read(pmic, REBOOT_REASON_REG);
+		if (v < 0 || pmic_reg_write(pmic, REBOOT_REASON_REG, (v & 1) | (bootloader ? REBOOT_BOOTLOADER << 1 : 0)))
+			printf("hakios: the PMK8350's reboot reason was not written (%d)\n", v);
 	}
-	ret = uclass_get_device_by_name(UCLASS_PMIC, "pmic@0", &pmic);
-	if (ret) {
-		printf("hakios: no PMK8350 (pmic@0): %d\n", ret);
-		return ret;
-	}
-	v = pmic_reg_read(pmic, REBOOT_REASON_REG);
-	if (v < 0)
-		return v;
-	ret = pmic_reg_write(pmic, REBOOT_REASON_REG, (v & 1) | REBOOT_BOOTLOADER << 1);
-	if (ret)
-		return ret;
-	printf("[oosexgang] hakios: restarting into the bootloader's fastboot\n");
+	printf("[oosexgang] hakios: restarting%s\n", bootloader ? " into the bootloader's fastboot" : "");
 	sysreset_walk_halt(SYSRESET_COLD);
 	return -EIO;
 }

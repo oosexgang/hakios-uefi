@@ -320,9 +320,11 @@ static int do_hakios_sum(struct cmd_tbl *cmdtp, int flag, int argc, char *const 
 	return hakios_sum(argc, argv) ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
 }
 
-static int do_hakios_bootloader(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
+static int do_hakios_reboot(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 {
-	return hakios_bootloader() ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
+	if (argc > 2 || (argc == 2 && strcmp(argv[1], "bootloader")))
+		return CMD_RET_USAGE;
+	return hakios_reboot(argc == 2) ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
 }
 
 static struct cmd_tbl cmd_hakios_sub[] = {
@@ -331,7 +333,7 @@ static struct cmd_tbl cmd_hakios_sub[] = {
 	U_BOOT_CMD_MKENT(info, 1, 0, do_hakios_info, "", ""),
 	U_BOOT_CMD_MKENT(slot, 2, 0, do_hakios_slot, "", ""),
 	U_BOOT_CMD_MKENT(sum, 4, 0, do_hakios_sum, "", ""),
-	U_BOOT_CMD_MKENT(bootloader, 1, 0, do_hakios_bootloader, "", ""),
+	U_BOOT_CMD_MKENT(reboot, 2, 0, do_hakios_reboot, "", ""),
 };
 
 static int do_hakios(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
@@ -352,7 +354,8 @@ U_BOOT_CMD(hakios, 5, 0, do_hakios,
 	"    (default: ABL's ramdisk; fastboot: what fastboot stage sent last)\n"
 	"hakios boot - start the loader (bootefi), with the payload at 0xf0000000\n"
 	"hakios info - what is in memory\n"
-	"hakios slot [a | b | successful] - Qualcomm's A/B slots: show them, make one active, mark the active one successful\n"
+	"hakios slot [successful | unbootable] - Qualcomm's A/B slots: show them; mark the active one successful, or\n"
+	"    unbootable (ABL then makes the other one active itself, at the next start)\n"
 	"hakios sum PART [BLOCK COUNT] - the sha256 of a partition's blocks (all of them by default)\n"
-	"hakios bootloader - restart into the phone's own fastboot (ABL)"
+	"hakios reboot [bootloader] - restart into Android, or into the phone's own fastboot (ABL)"
 );
