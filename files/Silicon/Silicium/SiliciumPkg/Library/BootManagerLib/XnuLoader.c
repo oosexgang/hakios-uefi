@@ -48,6 +48,34 @@ Log (
   VA_END (Marker);
 }
 
+//
+// XNU_SCREEN_LOG: a device that keeps no log on its storage (XNU_NO_STORAGE_WRITES) says on its screen what happened,
+// and waits before the reset so that a person can read it.
+//
+#ifdef XNU_SCREEN_LOG
+#include <Library/DebugLib.h>
+#include <Library/UefiLib.h>
+
+STATIC
+VOID
+EFIAPI
+Show (
+  IN CONST CHAR8 *Format,
+  ...)
+{
+  CHAR8   Buffer[256];
+  VA_LIST Marker;
+
+  VA_START (Marker, Format);
+  AsciiVSPrint (Buffer, sizeof (Buffer), Format, Marker);
+  VA_END (Marker);
+  AsciiPrint ("%a", Buffer);
+  DEBUG ((EFI_D_WARN, "%a", Buffer));
+}
+#else
+#define Show(...)  do { } while (0)
+#endif
+
 #define READ_SYSREG(Name) ({ UINT64 _Value; __asm__ volatile ("mrs %0, " #Name : "=r" (_Value)); _Value; })
 
 STATIC
@@ -214,6 +242,11 @@ FlushLog ()
   UINTN                  BlockSize;
   UINTN                  WriteSize;
 
+#ifdef XNU_NO_STORAGE_WRITES
+  // A device built not to write its storage at all (ziyi): the log is kept in RAM only.
+  return;
+#endif
+
   BlockIo = FindPartition (XNU_LOG_PARTITION);
   if (BlockIo == NULL) {
     return;
@@ -241,7 +274,9 @@ StartPayloadLoader ()
   UINT8              *Cursor;
   UINT8              *End;
 
+  Show ("HakiOS: payload at %lx: magic %08x size %x\n", (UINT64)XNU_PAYLOAD_BASE, Header->Magic, Header->Size);
   if (Header->Magic != XNU_PAYLOAD_MAGIC || Header->Size > XNU_PAYLOAD_MAX_SIZE) {
+    Show ("HakiOS: no payload (the boot shim did not put one here)\n");
     return;
   }
 
@@ -257,9 +292,13 @@ StartPayloadLoader ()
 
     if (AsciiStrnCmp (Entry->Name, "loader.efi", sizeof (Entry->Name)) == 0) {
       EFI_HANDLE Handle;
+      EFI_STATUS Status;
 
-      if (!EFI_ERROR (gBS->LoadImage (FALSE, gImageHandle, NULL, Entry + 1, Entry->Size, &Handle))) {
-        gBS->StartImage (Handle, NULL, NULL);
+      Status = gBS->LoadImage (FALSE, gImageHandle, NULL, Entry + 1, Entry->Size, &Handle);
+      Show ("HakiOS: loader.efi (%u bytes): LoadImage %r\n", Entry->Size, Status);
+      if (!EFI_ERROR (Status)) {
+        Status = gBS->StartImage (Handle, NULL, NULL);
+        Show ("HakiOS: loader.efi returned: %r\n", Status);
       }
 
       return;
@@ -273,6 +312,8 @@ VOID
 XnuLoaderMain ()
 {
   EFI_TIME Time;
+
+  Show ("\nHakiOS: no OS to boot: starting the XNU loader\n");
 
   // Normally does not return
   StartPayloadLoader ();
@@ -298,6 +339,35 @@ XnuLoaderMain ()
     Log ("== END ==\n");
     FlushLog ();
   }
+
+#ifdef XNU_SCREEN_LOG
+  {
+    // where the payload's memory is in UEFI's map, the one line of the memory map that matters here
+    UINTN                  MapSize = 0, MapKey, DescSize;
+    UINT32                 DescVersion;
+    EFI_MEMORY_DESCRIPTOR *Map     = NULL;
+
+    if (gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVersion) == EFI_BUFFER_TOO_SMALL) {
+      MapSize += 4 * EFI_PAGE_SIZE;
+      Map      = AllocatePool (MapSize);
+      if (Map != NULL && !EFI_ERROR (gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVersion))) {
+        for (UINTN Offset = 0; Offset < MapSize; Offset += DescSize) {
+          EFI_MEMORY_DESCRIPTOR *Desc = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + Offset);
+          UINT64                 End  = Desc->PhysicalStart + EFI_PAGES_TO_SIZE (Desc->NumberOfPages);
+
+          if (Desc->PhysicalStart <= XNU_PAYLOAD_BASE && XNU_PAYLOAD_BASE < End) {
+            Show ("HakiOS: map %lx-%lx type %d holds the payload\n", Desc->PhysicalStart, End, Desc->Type);
+          }
+        }
+      }
+      if (Map != NULL) {
+        FreePool (Map);
+      }
+    }
+    Show ("HakiOS: EL%d MIDR %lx; restarting into Android in 60 s\n", (UINT32)(READ_SYSREG (CurrentEL) >> 2), READ_SYSREG (MIDR_EL1));
+    gBS->Stall (60000000);
+  }
+#endif
 
   // The phone is unattended: always come back to Android.
   gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);

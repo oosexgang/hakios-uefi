@@ -3,9 +3,13 @@
 
 //
 // The boot shim copies everything appended after the UEFI FD to this address.
-// The region is marked reserved in the device memory map.
+// The region is marked reserved in the device memory map. A device whose memory has something
+// else there passes its own address from its .dsc (ziyi: -D XNU_PAYLOAD_BASE=0xB0000000ULL), the
+// same number as its devices/<name>/boot.conf.
 //
+#ifndef XNU_PAYLOAD_BASE
 #define XNU_PAYLOAD_BASE      0xF0000000ULL
+#endif
 #define XNU_PAYLOAD_MAX_SIZE  0x04000000ULL
 #define XNU_PAYLOAD_MAGIC     0x50554E58 // "XNUP"
 
