@@ -23,6 +23,29 @@ at a fixed commit, with HakiOS's changes on top, and the platform of each phone 
 
 Mu-Silicium's own code keeps its licence and its authors' notices; this is a fork of it in the open, as its licence allows.
 
+## U-Boot
+
+`u-boot/` is the other firmware HakiOS starts its loader with: [Das U-Boot](https://source.denx.de/u-boot/u-boot) at the
+release in `u-boot/BASE`, with HakiOS's changes, and each device's files (`devices/<name>/u-boot/files/`: its device tree,
+defconfig and environment). It is open source throughout: no vendor driver is needed, and nothing is flashed: the phone's ABL
+starts it from RAM (`fastboot boot`) and it starts the loader from memory. The common repository's `docs/u-boot.md` says how it
+runs and what has been checked.
+
+| What | Where |
+|---|---|
+| the U-Boot release it is made on | `u-boot/BASE` |
+| HakiOS's changes to U-Boot's files (Kconfig, Makefiles, the EFI setup) | `u-boot/hakios.patch` |
+| the hakios command: the loader and its payload from ABL's ramdisk or U-Boot's fastboot, the payload to `0xF0000000`, `bootefi` | `u-boot/files/cmd/hakios.c` |
+| Qualcomm's `EFI_USB_DEVICE_PROTOCOL` on U-Boot's USB gadget stack: the loader's own fastboot (`xl`) under U-Boot | `u-boot/files/lib/efi_loader/efi_qcom_usb.c` |
+| what the host does, on the phone's screen, each line marked `[oosexgang]` (`hakios_status=0` turns it off) | `efi_qcom_usb.c`, `cmd/hakios.c` |
+| U-Boot's DWC3 and fastboot fixed for this: bulk transfers start on queue, a stall is cleared with no transfer started, a response is dequeued only in flight | `u-boot/hakios.patch` |
+
+```sh
+uefi/u-boot/apply.sh             # u-boot/ at the top: BASE, hakios.patch, files/, every device's U-Boot files
+uefi/u-boot/build.sh redwood     # u-boot/build-redwood/u-boot.bin (CROSS_COMPILE: an AArch64 GCC)
+uefi/u-boot/export.sh            # the reverse, after changing something in u-boot/
+```
+
 ## The pictures
 
 ```sh
