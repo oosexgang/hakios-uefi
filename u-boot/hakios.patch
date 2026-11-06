@@ -1,3 +1,25 @@
+diff --git a/arch/arm/mach-snapdragon/board.c b/arch/arm/mach-snapdragon/board.c
+index 829a0109..1d2ab0ac 100644
+--- a/arch/arm/mach-snapdragon/board.c
++++ b/arch/arm/mach-snapdragon/board.c
+@@ -48,8 +48,17 @@ static struct {
+ 	phys_size_t size;
+ } prevbl_ddr_banks[CONFIG_NR_DRAM_BANKS] __section(".data") = { 0 };
+ 
++/*
++ * Where ABL loaded U-Boot to, noted before U-Boot relocates itself (dram_init() runs from board_init_f(), at the load address):
++ * the hakios command looks behind it for the container the boot image carries (cmd/hakios.c).
++ */
++extern char _start[];
++unsigned long hk_load_base = 1;
++
+ int dram_init(void)
+ {
++	if (hk_load_base == 1)
++		hk_load_base = (unsigned long)_start;
+ 	/*
+ 	 * gd->ram_base / ram_size have been setup already
+ 	 * in qcom_parse_memory().
 diff --git a/cmd/Kconfig b/cmd/Kconfig
 index c71c6824..02ed027c 100644
 --- a/cmd/Kconfig

@@ -241,8 +241,32 @@ static int do_hakios_load(struct cmd_tbl *cmdtp, int flag, int argc, char *const
 			printf("[oosexgang] hakios: no HKUB container or XNUP payload at %#lx to take the size from\n", addr);
 			return CMD_RET_USAGE;
 		}
-	} else if (abl_ramdisk(&addr, &size)) {
-		return CMD_RET_FAILURE;
+	} else {
+		/*
+		 * A boot image of header version 3 or 4 (the Redmi Note 13's): ABL builds the initrd from the vendor ramdisk and
+		 * init_boot and does not hand over the boot image's own ramdisk. What the image carries is appended to the kernel
+		 * (U-Boot, then an HKUB container on a 4 KiB boundary): look right behind the place ABL loaded U-Boot to
+		 * (hk_load_base, noted by dram_init() before U-Boot relocates itself).
+		 */
+		extern unsigned long hk_load_base;
+		ulong o;
+		int found = 0;
+
+		if (hk_load_base > 1) {
+			for (o = 0x1000; o < 0x800000 && !found; o += 0x1000) {
+				const u32 *w = map_sysmem(hk_load_base + o, 0x40);
+
+				if (w[0] == HKUB_MAGIC && w[1] == HKUB_VERSION && w[2] >= 1 && w[2] <= 16 && w[3] == 16 + 32 * w[2]) {
+					addr = hk_load_base + o;
+					size = known_size(map_sysmem(addr, 0));
+					printf("[oosexgang] hakios: an HKUB container of %#lx bytes at %#lx (carried by the boot image; U-Boot was loaded at %#lx)\n",
+					       size, addr, hk_load_base);
+					found = 1;
+				}
+			}
+		}
+		if (!found && abl_ramdisk(&addr, &size))
+			return CMD_RET_FAILURE;
 	}
 	if (size < 4)
 		return CMD_RET_FAILURE;
@@ -257,6 +281,7 @@ static int do_hakios_load(struct cmd_tbl *cmdtp, int flag, int argc, char *const
 	printf("[oosexgang] hakios: nothing known at %#lx (%08x): an HKUB container, an XNUP payload or loader.efi\n", addr, magic);
 	return CMD_RET_FAILURE;
 }
+
 
 static int do_hakios_boot(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 {
@@ -274,6 +299,10 @@ static int do_hakios_boot(struct cmd_tbl *cmdtp, int flag, int argc, char *const
 
 static int do_hakios_info(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 {
+	{
+		extern unsigned long hk_load_base;
+		printf("U-Boot was loaded by ABL at %#lx\n", hk_load_base);
+	}
 	const u32 *head = map_sysmem(PAYLOAD_BASE, 8);
 	ulong start, size;
 
