@@ -64,6 +64,7 @@ def main():
     p.add_argument("--dtb", type=Path, required=True)
     p.add_argument("--env", type=Path, help="optional board environment file")
     p.add_argument("--payload", type=Path, help="optional XNUP payload")
+    p.add_argument("--hkub-output", type=Path, help="also write the standalone HKUB container for SD-card boot")
     p.add_argument("-o", "--output", type=Path, default=Path("build/hakios-u-boot.img"))
     a = p.parse_args()
 
@@ -89,6 +90,10 @@ def main():
     if a.env:
         entries.append(("env", a.env.read_bytes()))
     ramdisk = hkub(entries)
+    if a.hkub_output:
+        a.hkub_output.parent.mkdir(parents=True, exist_ok=True)
+        a.hkub_output.write_bytes(ramdisk)
+        print(f"{a.hkub_output}: {len(ramdisk)} bytes; standalone HKUB container")
     kernel = gzip.compress(ub, compresslevel=6, mtime=0) + a.dtb.read_bytes()
     image = boot_image(kernel, ramdisk)
     a.output.parent.mkdir(parents=True, exist_ok=True)

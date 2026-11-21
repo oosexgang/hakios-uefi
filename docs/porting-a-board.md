@@ -53,7 +53,29 @@ The HakiOS loader and U-Boot use the HakiOS EFI USB protocol GUID `0ebd8a1f-88b5
 
 The loader in the kernel repository must include the same protocol definition and probe this GUID. It retains a Qualcomm-protocol fallback for stock Qualcomm UEFI. If a device uses a different transport or cannot use U-Boot's gadget framework, add and document a transport adapter; do not label the device supported until transfers work on hardware.
 
-## 5. Build and package
+## 5. Boot from an SD card
+
+The shared environment includes an optional SD-card path. It reads `/hakios.hkub` from a FAT partition and passes the container to `hakios load`. This is supported only on profiles that enable the target's SD/MMC host, pinctrl and regulator setup, block layer, `CONFIG_CMD_MMC`, and `CONFIG_CMD_FAT`. U-Boot's `mmc` command selects a device; `fatload` reads a file into RAM. See the [U-Boot MMC command](https://docs.u-boot.org/en/stable/usage/cmd/mmc.html) and [FAT load command](https://docs.u-boot.org/en/v2025.01/usage/cmd/fatload.html) references.
+
+Use a FAT32 first partition, for example 1 GiB, and copy `hakios.hkub` into its root directory. That is enough for the loader and the current payload limit; the rest of the card may be left unused or put in a separate data partition. HakiOS does not automatically mount or use that second partition: the OS needs its own SD driver and storage configuration.
+
+Build both the usual RAM-boot image and the standalone container:
+
+```sh
+python3 u-boot/pack.py \
+  --u-boot "build/u-boot-$DEVICE/u-boot.bin" \
+  --loader "$KERNEL_ROOT/arch/arm64/boot/loader.efi" \
+  --dtb "$DEVICE_FIRMWARE/$FIRMWARE_DIR/$PROFILE_DTB" \
+  --payload /path/to/device.xnup \
+  --hkub-output build/hakios.hkub \
+  -o "build/hakios-$DEVICE.img"
+```
+
+Copy `build/hakios.hkub` to the SD card's FAT32 root. In the board environment file, set `hakios_sd_dev` to the device number shown by `mmc list` (commonly, but not always, `0`), `hakios_sd_part=1`, and `hakios_sd_addr_r` to a RAM range reserved for this file by the board's memory map. The common loader caps the read at 64 MiB. That full range must be available and must not overlap U-Boot, firmware, the device tree, or reserved regions. Never copy an address from another phone. Enable `CONFIG_CMD_MMC`, `CONFIG_MMC`, the correct controller/PHY and `CONFIG_CMD_FAT`; then verify `mmc list`, `mmc dev`, and `fatls mmc <dev>:1 /` on the actual board. Select **Boot HakiOS from SD card** in the menu, or let the default boot flow try it after the boot-image RAM container.
+
+For removable media, allocate space on the card itself. Do not resize Android's internal GPT or reserve 64 GiB of phone storage for this boot flow. A second partition is only a storage layout choice; it does not make that space available to the OS without driver and mount support.
+
+## 6. Build and package
 
 Install GNU make, GNU Bash, Python 3, OpenSSL 3, and an AArch64 GCC toolchain. Set `KERNEL_ROOT` to the kernel checkout and `DEVICE_FIRMWARE` to the local firmware root:
 
@@ -74,14 +96,14 @@ python3 u-boot/pack.py \
 
 Omit `--payload` to start the loader without a preloaded XNUP image. Use the device's own DTB. The resulting Android boot image is for the stock bootloader's RAM-boot command; it is not a flashing package.
 
-## 6. Test before calling it supported
+## 7. Test before calling it supported
 
 Keep a test log in the profile README. Test in this order:
 
 1. Build the upstream target and verify the AArch64 boot-image header.
 2. Start U-Boot with RAM boot and capture a serial log.
 3. Check the displayed memory map and confirm the loader and payload reservations do not overlap firmware or device memory.
-4. Verify storage discovery and USB fastboot/ACM transfers, then return to stock recovery.
+4. Verify SD-card detection, FAT file reads, USB fastboot/ACM transfers, then return to stock recovery.
 5. Start the EFI loader with and without a payload; check reset, watchdog, and repeated cold boots.
 6. Validate the target OS separately. Reaching a logo is not a successful OS boot.
 
