@@ -13,8 +13,7 @@ python3 u-boot/pack.py \
   --u-boot build/u-boot-redwood/u-boot.bin \
   --loader "$KERNEL_ROOT/arch/arm64/boot/loader.efi" \
   --dtb "$REDWOOD_FIRMWARE/uefi/device-tree.dtb" \
-  --env u-boot/env/redwood.env \
-  -o build/redwood-u-boot.img
+  -o build/hakios-redwood.img
 ```
 
 `pack.py` also accepts `--payload` to add an XNUP image. Use a device's own profile DTB and U-Boot defconfig. Do not reuse Redwood addresses or firmware on another board.

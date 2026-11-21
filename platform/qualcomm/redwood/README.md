@@ -13,7 +13,7 @@ This is the first HakiOS phone profile. It uses the upstream Qualcomm phone path
 
 Place the boot-chain device tree at `local-firmware/redwood/uefi/device-tree.dtb`. This local directory is ignored by Git. Board DTS and defconfig sources live here; the shared kernel/board data package remains in `poco-x5-pro-device`.
 
-Build with `u-boot/build.sh qualcomm/redwood`; package it using the loader and DTB paths from `profile.env`. The image can be RAM-booted with `fastboot boot`; it does not flash a partition. Do not reuse its memory map or reserved regions on another board.
+Build with `u-boot/build.sh qualcomm/redwood`; package it using the loader and DTB paths from `profile.env`. The default boot environment is compiled into U-Boot, so the package has no separate Redwood environment file. The image can be RAM-booted with `fastboot boot`; it does not flash a partition. Do not reuse its memory map or reserved regions on another board.
 
 ## Bring-up notes
 

@@ -13,8 +13,7 @@ python3 u-boot/pack.py \
   --u-boot build/u-boot-redwood/u-boot.bin \
   --loader "$KERNEL_ROOT/arch/arm64/boot/loader.efi" \
   --dtb "$REDWOOD_FIRMWARE/uefi/device-tree.dtb" \
-  --env u-boot/env/redwood.env \
-  -o build/redwood-u-boot.img
+  -o build/hakios-redwood.img
 ```
 
 The produced Android boot image is intended for `fastboot boot`. It does not write device partitions. See [board profiles](platform/README.md) for adding a device and the current validation status.

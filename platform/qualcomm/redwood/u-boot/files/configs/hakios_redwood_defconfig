@@ -5,7 +5,7 @@
 
 CONFIG_ARM=y
 CONFIG_DEFAULT_DEVICE_TREE="qcom/sm7325-xiaomi-redwood"
-CONFIG_ENV_DEFAULT_ENV_TEXT_FILE="board/qualcomm/hakios-redwood.env"
+CONFIG_ENV_DEFAULT_ENV_TEXT_FILE="board/qualcomm/hakios.env"
 CONFIG_CMD_HAKIOS=y
 # the HakiOS loader talks fastboot to the host itself, through Qualcomm's USB device protocol (xl)
 CONFIG_EFI_QCOM_USB_DEVICE=y
@@ -26,6 +26,7 @@ CONFIG_CONSOLE_RECORD_OUT_SIZE=0x6000
 CONFIG_FASTBOOT_CMD_OEM_CONSOLE=y
 CONFIG_FASTBOOT_OEM_RUN=y
 # CONFIG_REQUIRE_SERIAL_CONSOLE is not set
+# CONFIG_VIDEO_LOGO is not set
 
 # the fastboot buffer takes a whole HKUB container: the loader and a payload of up to 63 MiB
 CONFIG_FASTBOOT_BUF_SIZE=0x8000000
