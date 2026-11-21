@@ -34,7 +34,7 @@ def hkub(entries):
 
 
 def boot_image(kernel, ramdisk):
-    """Make Android boot-image header v1, as accepted by Redwood's ABL."""
+    """Make Android boot-image header v1 for bootloaders that support RAM boot."""
     sha = hashlib.sha1()
     for part in (kernel, ramdisk, b""):
         sha.update(part)

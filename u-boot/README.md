@@ -1,27 +1,14 @@
 # U-Boot integration
 
-The `files/` and `patches/` directories contain shared HakiOS commands and EFI setup. Board and family overlays are applied from `platform/` by `apply.sh`.
+`files/` and `patches/` contain shared HakiOS commands, the EFI USB transport, and fixes for U-Boot's gadget transfer path. Device-specific defconfigs and device trees are applied from `platform/<vendor>/<device>/u-boot/files/`.
 
-## Build
-
-Install GNU make, GNU Bash, Python 3, OpenSSL 3, and an AArch64 GCC toolchain. Set `KERNEL_ROOT` to the kernel checkout and `REDWOOD_FIRMWARE` to Redwood's local firmware directory:
+Build requires a profile. The scripts intentionally have no default board:
 
 ```sh
 source ./env.sh
-u-boot/build.sh qualcomm/redwood
-python3 u-boot/pack.py \
-  --u-boot build/u-boot-redwood/u-boot.bin \
-  --loader "$KERNEL_ROOT/arch/arm64/boot/loader.efi" \
-  --dtb "$REDWOOD_FIRMWARE/uefi/device-tree.dtb" \
-  -o build/hakios-redwood.img
+u-boot/build.sh vendor/device
 ```
 
-`pack.py` also accepts `--payload` to add an XNUP image. Use a device's own profile DTB and U-Boot defconfig. Do not reuse Redwood addresses or firmware on another board.
+The profile selects an upstream defconfig. `pack.py` combines that U-Boot binary, the HakiOS EFI loader, a device tree, and optionally an XNUP payload into an Android boot image. Example packaging commands are in [the board porting guide](../docs/porting-a-board.md).
 
-## U-Boot console
-
-The menu provides loader entry, USB serial console, U-Boot fastboot, shell, and reset. The USB ACM interface is a serial terminal, not an on-screen keyboard. On macOS, connect to `/dev/cu.usbmodem*` at 115200 baud after enabling the serial gadget.
-
-## Validation
-
-Redwood U-Boot was accepted by stock fastboot via RAM boot, and the HakiOS loader reached the Darwin 27 Apple logo. Full userspace startup has not been verified. The MediaTek transport and phone profiles are not implemented.
+The HakiOS EFI USB protocol is vendor-neutral. The U-Boot implementation uses the generic gadget API; each board still needs a working USB device-controller driver and correct device-tree setup. A loader that predates this protocol can use the Qualcomm compatibility fallback, but that does not add support for other vendor firmware.

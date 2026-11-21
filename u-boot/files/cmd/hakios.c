@@ -4,13 +4,12 @@
  *
  * What the loader needs is two things in RAM: the loader itself (an AArch64 UEFI application, loader.efi) and its
  * payload (the "XNUP" container: the kernel, a small root image, the command line), at PAYLOAD_BASE, where the loader
- * looks first (xnuloader/loader.c). Nothing is read from or written to the phone's storage on the way.
+ * looks first (xnuloader/loader.c). This command never writes device storage.
  *
- * They come in one "HKUB" container (tools/mkubootimg.py in the common repository), from either of two places:
+ * They come in one "HKUB" container (tools/mkubootimg.py in the kernel repository), from either of two places:
  *
- *   - the ramdisk of the boot image ABL started U-Boot from (fastboot boot hakios-u-boot.img): ABL put it in RAM
- *     and said where in the device tree it handed over (/chosen linux,initrd-start and -end);
- *   - U-Boot's own fastboot buffer, from the host: fastboot stage x.hkub; fastboot oem run:hakios load fastboot
+ *   - the ramdisk of the boot image used to start U-Boot, with its address recorded in /chosen/initrd-start and -end;
+ *   - U-Boot's fastboot buffer, with `fastboot stage x.hkub` and `fastboot oem run:hakios load fastboot`;
  *   - anywhere else in RAM: hakios load ADDR [SIZE] (a container or a payload says its own size)
  *
  * A bare XNUP payload or a bare loader.efi is taken too, so either can be changed independently.
@@ -63,15 +62,15 @@ struct hkub_entry {
 static phys_addr_t loader_addr;
 static ulong loader_size, loader_room, payload_size;
 
-/* ABL's ramdisk, from the device tree ABL handed over (U-Boot keeps its address: get_prev_bl_fdt_addr()) */
-static int abl_ramdisk(ulong *start, ulong *size)
+/* initrd passed in the previous bootloader's FDT (U-Boot keeps its address in get_prev_bl_fdt_addr()) */
+static int previous_boot_ramdisk(ulong *start, ulong *size)
 {
 	const void *fdt = (const void *)get_prev_bl_fdt_addr();
 	u64 lo, hi;
 	int node;
 
 	if (!fdt || fdt_check_header(fdt)) {
-		printf("[oosexgang] hakios: no device tree from the bootloader before U-Boot\n");
+	printf("[oosexgang] hakios: no device tree from the bootloader before U-Boot\n");
 		return -ENOENT;
 	}
 	node = fdt_path_offset(fdt, "/chosen");
@@ -176,7 +175,7 @@ static int take_container(const u8 *data, ulong size)
 			printf("[oosexgang] hakios: %s runs past the end of the container\n", name);
 			return -EINVAL;
 		}
-		/* ABL's ramdisk sits in memory U-Boot may have used since: a damaged entry is never started */
+		/* the previous bootloader's ramdisk sits in memory U-Boot may have used since: a damaged entry is never started */
 		if (crc32(0, p, e->size) != e->crc32) {
 			printf("[oosexgang] hakios: %s is damaged (crc32 %08x, should be %08x)\n", name, crc32(0, p, e->size), e->crc32);
 			return -EIO;
@@ -238,7 +237,7 @@ static int do_hakios_load(struct cmd_tbl *cmdtp, int flag, int argc, char *const
 			printf("[oosexgang] hakios: no HKUB container or XNUP payload at %#lx to take the size from\n", addr);
 			return CMD_RET_USAGE;
 		}
-	} else if (abl_ramdisk(&addr, &size)) {
+	} else if (previous_boot_ramdisk(&addr, &size)) {
 		return CMD_RET_FAILURE;
 	}
 	if (size < 4)
@@ -282,14 +281,9 @@ static int do_hakios_info(struct cmd_tbl *cmdtp, int flag, int argc, char *const
 		printf("payload: %u bytes at %#lx%s\n", head[1] + 8, PAYLOAD_BASE, payload_size ? "" : " (not put there by U-Boot)");
 	else
 		printf("payload: none at %#lx\n", PAYLOAD_BASE);
-	if (!abl_ramdisk(&start, &size))
-		printf("ramdisk: %lu bytes at %#lx (from ABL)\n", size, start);
+	if (!previous_boot_ramdisk(&start, &size))
+		printf("ramdisk: %lu bytes at %#lx (from previous bootloader)\n", size, start);
 	return CMD_RET_SUCCESS;
-}
-
-static int do_hakios_slot(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
-{
-	return hakios_slot(argc, argv) ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
 }
 
 static int do_hakios_sum(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
@@ -297,20 +291,11 @@ static int do_hakios_sum(struct cmd_tbl *cmdtp, int flag, int argc, char *const 
 	return hakios_sum(argc, argv) ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
 }
 
-static int do_hakios_reboot(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
-{
-	if (argc > 2 || (argc == 2 && strcmp(argv[1], "bootloader")))
-		return CMD_RET_USAGE;
-	return hakios_reboot(argc == 2) ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
-}
-
 static struct cmd_tbl cmd_hakios_sub[] = {
 	U_BOOT_CMD_MKENT(load, 3, 0, do_hakios_load, "", ""),
 	U_BOOT_CMD_MKENT(boot, 1, 0, do_hakios_boot, "", ""),
 	U_BOOT_CMD_MKENT(info, 1, 0, do_hakios_info, "", ""),
-	U_BOOT_CMD_MKENT(slot, 2, 0, do_hakios_slot, "", ""),
 	U_BOOT_CMD_MKENT(sum, 4, 0, do_hakios_sum, "", ""),
-	U_BOOT_CMD_MKENT(reboot, 2, 0, do_hakios_reboot, "", ""),
 };
 
 static int do_hakios(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
@@ -325,14 +310,11 @@ static int do_hakios(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv
 	return c->cmd(cmdtp, flag, argc - 1, argv + 1);
 }
 
-U_BOOT_CMD(hakios, 5, 0, do_hakios,
+U_BOOT_CMD(hakios, 4, 0, do_hakios,
 	"start the HakiOS loader from memory",
 	"load [fastboot | addr [size]] - take an HKUB container, an XNUP payload or loader.efi\n"
-	"    (default: ABL's ramdisk; fastboot: what fastboot stage sent last)\n"
+	"    (default: the previous bootloader's ramdisk; fastboot: what fastboot stage sent last)\n"
 	"hakios boot - start the loader (bootefi), with the payload at 0xf0000000\n"
 	"hakios info - what is in memory\n"
-	"hakios slot [successful | unbootable] - Qualcomm's A/B slots: show them; mark the active one successful, or\n"
-	"    unbootable (ABL then makes the other one active itself, at the next start)\n"
 	"hakios sum PART [BLOCK COUNT] - the sha256 of a partition's blocks (all of them by default)\n"
-	"hakios reboot [bootloader] - restart into Android, or into the phone's own fastboot (ABL)"
 );

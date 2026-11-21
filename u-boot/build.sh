@@ -4,12 +4,17 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 UEFI_ROOT=$(cd "$HERE/.." && pwd)
-PROFILE=${1:-qualcomm/redwood}
+PROFILE_ROOT=${HAKIOS_PROFILE_ROOT:-$UEFI_ROOT/platform}
+PROFILE=${1:-}
+if [ -z "$PROFILE" ]; then
+	echo "usage: $0 <vendor/device>" >&2
+	exit 2
+fi
 if [[ ! "$PROFILE" =~ ^[a-z0-9_-]+/[a-z0-9_-]+$ ]]; then
 	echo "build.sh: profile must be vendor/device, got '$PROFILE'" >&2
 	exit 2
 fi
-PROFILE_DIR="$UEFI_ROOT/platform/$PROFILE"
+PROFILE_DIR="$PROFILE_ROOT/$PROFILE"
 if [ ! -f "$PROFILE_DIR/profile.env" ]; then
 	echo "build.sh: no buildable profile at platform/$PROFILE/profile.env" >&2
 	exit 2

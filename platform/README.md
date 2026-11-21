@@ -1,17 +1,7 @@
 # Board profiles
 
-The HakiOS command, HKUB image reader, and EFI handoff are shared. A profile selects an upstream U-Boot defconfig and device tree, then adds board-specific files under `u-boot/files/`. Optional vendor-family code belongs under `platform/<vendor>/common/u-boot/files/`.
+This repository currently contains the shared HakiOS U-Boot/EFI layer and a profile template. It contains no phone-specific profile. A board is supported only after its profile builds and its RAM-boot, recovery, storage, USB, and loader handoff have been checked on the actual hardware.
 
-Build a profile with `u-boot/build.sh <vendor>/<device>`. A profile is considered buildable only when it has `profile.env`, a valid upstream U-Boot defconfig, and the matching local DTB. The profile's firmware directory is ignored by Git; do not check vendor firmware into this repository.
+Start with a device whose bootloader can start upstream U-Boot from RAM. Add `<profile-root>/<vendor>/<device>/profile.env` and its U-Boot overlay. The profile root can live in a separate device repository and is selected with `HAKIOS_PROFILE_ROOT`. Put code shared by a vendor family under this repository's `platform/<vendor>/common/`; keep local vendor firmware under ignored `local-firmware/<device>/`.
 
-## Current coverage
-
-| Family | Profile | Validation |
-| --- | --- | --- |
-| Qualcomm Snapdragon | `qualcomm/redwood` | POCO X5 Pro SM7325 build and RAM boot observed; complete Darwin userspace boot remains unconfirmed. |
-| MediaTek | None yet | U-Boot support depends on a named phone's boot chain, DDR setup, device tree, and USB transport. |
-| Other AArch64 SoCs | None yet | Add a board profile when upstream U-Boot can start on that device. |
-
-This is a reusable U-Boot framework, not one binary that can boot every phone. DDR initialization, secure boot, display, storage, and USB vary by board. A device is supported only after its profile has been built and tested on hardware.
-
-To add a phone, copy `profile.env.example`, put its U-Boot overlay under `platform/<vendor>/<device>/u-boot/files/`, add only shared family code to `platform/<vendor>/common/`, and record the exact SoC, boot chain, firmware provenance, test status, and recovery method in the device README.
+See [porting a board](../docs/porting-a-board.md) for the full profile contract and validation record.

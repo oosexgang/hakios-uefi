@@ -25,7 +25,7 @@ index bbbdfcc4..3839d1dd 100644
  obj-$(CONFIG_CMD_BMP) += bmp.o
  obj-$(CONFIG_CMD_BOOTCOUNT) += bootcount.o
  obj-$(CONFIG_CMD_BOOTEFI) += bootefi.o
-+obj-$(CONFIG_CMD_HAKIOS) += hakios.o hakios_slot.o
++obj-$(CONFIG_CMD_HAKIOS) += hakios.o hakios_sum.o
  obj-$(CONFIG_CMD_BOOTMENU) += bootmenu.o
  obj-$(CONFIG_CMD_BOOTSTAGE) += bootstage.o
  obj-$(CONFIG_CMD_BOOTZ) += bootz.o
@@ -33,7 +33,7 @@ diff --git a/drivers/usb/dwc3/gadget.c b/drivers/usb/dwc3/gadget.c
 index 24ae0c23..1cd4eed2 100644
 --- a/drivers/usb/dwc3/gadget.c
 +++ b/drivers/usb/dwc3/gadget.c
-@@ -1097,6 +1097,28 @@ static int __dwc3_gadget_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
+@@ -1097,6 +1097,27 @@ static int __dwc3_gadget_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
  			dev_dbg(dwc->dev, "%s: failed to kick transfers\n",
  					dep->name);
  		}
@@ -45,8 +45,7 @@ index 24ae0c23..1cd4eed2 100644
 +	 * does now, instead of on the XferNotReady that the host's next
 +	 * token brings: a request queued after that event had been taken
 +	 * (or with BUSY left over from the transfer before) waited for one
-+	 * that never came, and a receive of a megabyte took nothing for as
-+	 * long as it was let wait (seen on the POCO X5 Pro, xl's downloads).
++	 * that never came, leaving a bulk receive stalled indefinitely.
 +	 */
 +	if (!usb_endpoint_xfer_isoc(dep->endpoint.desc)) {
 +		if ((dep->flags & DWC3_EP_BUSY) && list_empty(&dep->req_queued)) {
@@ -131,7 +130,7 @@ index 8df0e3f3..bb1e4ec1 100644
 +	/*
 +	 * Only a response still in flight is taken back. One that is not (any that completed, and always from its own
 +	 * completion) made DWC3 print an error for every response; "oem console" sent that error as its next line, which
-+	 * completed with another, for ever, and the gadget stopped answering (seen on the POCO X5 Pro).
++	 * completed with another, indefinitely, and the gadget stopped answering.
 +	 */
 +	if (in_req->status == -EINPROGRESS)
 +		usb_ep_dequeue(fastboot_func->in_ep, in_req);
@@ -146,8 +145,8 @@ index 3a4d5026..0e78ad20 100644
  efi_status_t efi_disks_register(void);
  /* Called by efi_init_obj_list() to install EFI_RNG_PROTOCOL */
  efi_status_t efi_rng_register(void);
-+/* Called by efi_init_obj_list() to install Qualcomm's EFI_USB_DEVICE_PROTOCOL */
-+efi_status_t efi_qcom_usb_register(void);
++/* Called by efi_init_obj_list() to install the HakiOS USB transport protocol */
++efi_status_t efi_hakios_usb_register(void);
  /* Called by efi_init_obj_list() to install EFI_TCG2_PROTOCOL */
  efi_status_t efi_tcg2_register(void);
  /* Called by efi_init_obj_list() to install RISCV_EFI_BOOT_PROTOCOL */
@@ -155,18 +154,16 @@ diff --git a/lib/efi_loader/Kconfig b/lib/efi_loader/Kconfig
 index 4cb13ae7..9f794da0 100644
 --- a/lib/efi_loader/Kconfig
 +++ b/lib/efi_loader/Kconfig
-@@ -557,6 +557,15 @@ config EFI_ESRT
+@@ -557,6 +557,13 @@ config EFI_ESRT
  	help
  	  Enabling this option creates the ESRT UEFI system table.
  
-+config EFI_QCOM_USB_DEVICE
-+	bool "Qualcomm's EFI_USB_DEVICE_PROTOCOL"
++config EFI_HAKIOS_USB_DEVICE
++	bool "HakiOS EFI USB device protocol"
 +	depends on USB_GADGET && DM_USB_GADGET
 +	help
-+	  Provide the USB device protocol of Qualcomm's UEFI (as published in
-+	  its open-source ABL) on U-Boot's USB gadget stack, for EFI
-+	  applications written for Qualcomm's firmware that talk to a host
-+	  over USB themselves, such as the HakiOS loader.
++	  Provide the HakiOS USB transport on U-Boot's generic gadget stack.
++	  Enable it for boards with a working USB device controller driver.
 +
  config EFI_ECPT
  	bool "Enable the UEFI ECPT generation"
@@ -179,7 +176,7 @@ index d73ad439..4a39b8b5 100644
  obj-$(CONFIG_EFI_LOAD_FILE2_INITRD) += efi_load_initrd.o
  obj-$(CONFIG_EFI_SIGNATURE_SUPPORT) += efi_signature.o
  obj-$(CONFIG_EFI_ECPT) += efi_conformance.o
-+obj-$(CONFIG_EFI_QCOM_USB_DEVICE) += efi_qcom_usb.o
++obj-$(CONFIG_EFI_HAKIOS_USB_DEVICE) += efi_hakios_usb.o
  obj-$(CONFIG_EFI_DEBUG_SUPPORT) += efi_debug_support.o
  
  EFI_VAR_SEED_FILE := $(subst $\",,$(CONFIG_EFI_VAR_SEED_FILE))
@@ -191,8 +188,8 @@ index f302bb62..ab5a9854 100644
  			goto out;
  	}
  
-+	if (IS_ENABLED(CONFIG_EFI_QCOM_USB_DEVICE)) {
-+		ret = efi_qcom_usb_register();
++	if (IS_ENABLED(CONFIG_EFI_HAKIOS_USB_DEVICE)) {
++		ret = efi_hakios_usb_register();
 +		if (ret != EFI_SUCCESS)
 +			goto out;
 +	}

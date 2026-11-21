@@ -4,12 +4,17 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 UEFI_ROOT=$(cd "$HERE/.." && pwd)
-PROFILE=${1:-qualcomm/redwood}
+PROFILE_ROOT=${HAKIOS_PROFILE_ROOT:-$UEFI_ROOT/platform}
+PROFILE=${1:-}
+if [ -z "$PROFILE" ]; then
+	echo "usage: $0 <vendor/device>" >&2
+	exit 2
+fi
 if [[ ! "$PROFILE" =~ ^[a-z0-9_-]+/[a-z0-9_-]+$ ]]; then
 	echo "apply.sh: profile must be vendor/device, got '$PROFILE'" >&2
 	exit 2
 fi
-PROFILE_DIR="$UEFI_ROOT/platform/$PROFILE"
+PROFILE_DIR="$PROFILE_ROOT/$PROFILE"
 if [ ! -f "$PROFILE_DIR/profile.env" ]; then
 	echo "apply.sh: no buildable profile at platform/$PROFILE/profile.env" >&2
 	exit 2
@@ -39,7 +44,7 @@ fi
 
 if git -C "$UB" apply --check "$HERE/patches/hakios.patch" 2>/dev/null; then
 	git -C "$UB" apply --whitespace=nowarn "$HERE/patches/hakios.patch"
-elif ! grep -q 'config CMD_HAKIOS' "$UB/cmd/Kconfig" || ! grep -q 'EFI_QCOM_USB_DEVICE' "$UB/lib/efi_loader/Kconfig"; then
+elif ! grep -q 'config CMD_HAKIOS' "$UB/cmd/Kconfig" || ! grep -q 'EFI_HAKIOS_USB_DEVICE' "$UB/lib/efi_loader/Kconfig"; then
 	echo "apply.sh: patch does not apply cleanly to the pinned source" >&2
 	exit 1
 fi
