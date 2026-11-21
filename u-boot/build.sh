@@ -1,24 +1,87 @@
 #!/bin/bash
-# Build HakiOS's U-Boot for one device: u-boot/ (made by apply.sh) with configs/hakios_<device>_defconfig, into
-# u-boot/build-<device>/u-boot.bin: an AArch64 image with Linux's header, which ABL starts like a kernel.
-#
-#   uefi/u-boot/build.sh DEVICE
-#
-# CROSS_COMPILE: an AArch64 GCC (aarch64-linux-gnu-, or Arm's aarch64-none-elf-); found on PATH when not given.
-set -e
-HERE=$(cd "$(dirname "$0")" && pwd)     # not resolved: uefi/ may be a link to a checkout elsewhere
-ROOT=$(dirname "$(dirname "$HERE")")
-UB=${U_BOOT:-$ROOT/u-boot}
-dev=${1:?usage: build.sh DEVICE}
-[ -d "$UB" ] || { echo "u-boot/build.sh: no $UB (uefi/u-boot/apply.sh first)" >&2; exit 1; }
-[ -f "$UB/configs/hakios_${dev}_defconfig" ] || { echo "u-boot/build.sh: no hakios_${dev}_defconfig in $UB" >&2; exit 1; }
-if [ -z "$CROSS_COMPILE" ]; then
-	for c in aarch64-linux-gnu- aarch64-none-elf- aarch64-elf-; do
-		command -v "${c}gcc" >/dev/null && { CROSS_COMPILE=$c; break; }
-	done
-	[ -n "$CROSS_COMPILE" ] || { echo "u-boot/build.sh: no AArch64 GCC on PATH (CROSS_COMPILE=...)" >&2; exit 1; }
+# Build U-Boot for a board profile on macOS or Linux.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+UEFI_ROOT=$(cd "$HERE/.." && pwd)
+PROFILE=${1:-qualcomm/redwood}
+if [[ ! "$PROFILE" =~ ^[a-z0-9_-]+/[a-z0-9_-]+$ ]]; then
+	echo "build.sh: profile must be vendor/device, got '$PROFILE'" >&2
+	exit 2
 fi
-out=$UB/build-$dev
-make -C "$UB" -s O="$out" CROSS_COMPILE="$CROSS_COMPILE" "hakios_${dev}_defconfig"
-make -C "$UB" -s O="$out" CROSS_COMPILE="$CROSS_COMPILE" -j"$(nproc)"
-ls -la "$out/u-boot.bin"
+PROFILE_DIR="$UEFI_ROOT/platform/$PROFILE"
+if [ ! -f "$PROFILE_DIR/profile.env" ]; then
+	echo "build.sh: no buildable profile at platform/$PROFILE/profile.env" >&2
+	exit 2
+fi
+source "$PROFILE_DIR/profile.env"
+DEVICE=${PROFILE#*/}
+UB=${U_BOOT:-$UEFI_ROOT/build/u-boot-$DEVICE-src}
+OUT=${U_BOOT_OUT:-$UEFI_ROOT/build/u-boot-$DEVICE}
+JOBS=${JOBS:-}
+
+U_BOOT="$UB" "$HERE/apply.sh" "$PROFILE"
+
+if [ -z "${CROSS_COMPILE:-}" ]; then
+	for prefix in aarch64-elf- aarch64-linux-gnu- aarch64-none-elf-; do
+		if command -v "${prefix}gcc" >/dev/null 2>&1; then
+			CROSS_COMPILE=$prefix
+			break
+		fi
+	done
+fi
+if [ -z "${CROSS_COMPILE:-}" ]; then
+	echo "build.sh: install an AArch64 GCC toolchain or set CROSS_COMPILE" >&2
+	exit 1
+fi
+
+if [ "$(uname -s)" = Darwin ]; then
+	BREW=${HOMEBREW_PREFIX:-$(brew --prefix)}
+	TOOLS="$UEFI_ROOT/build/u-boot-host-tools"
+	mkdir -p "$TOOLS"
+	GMAKE=${GNU_MAKE:-$(command -v gmake || true)}
+	GBASH=${GNU_BASH:-$BREW/bin/bash}
+	NCPU=$(sysctl -n hw.ncpu)
+	PYTHON=${PYTHON3:-$(command -v python3.12 || command -v python3)}
+	OPENSSL=${OPENSSL_PREFIX:-$(brew --prefix openssl@3)}
+	[ -x "$GMAKE" ] || { echo "build.sh: GNU make is required (brew install make)" >&2; exit 1; }
+	[ -x "$GBASH" ] || { echo "build.sh: GNU Bash 5 is required (brew install bash)" >&2; exit 1; }
+	[ -n "$PYTHON" ] && [ -x "$PYTHON" ] || { echo "build.sh: Python 3 is required" >&2; exit 1; }
+	[ -d "$OPENSSL/include/openssl" ] || { echo "build.sh: OpenSSL 3 headers are required (brew install openssl@3)" >&2; exit 1; }
+	cat > "$TOOLS/make" <<EOF
+#!/bin/sh
+exec "$GMAKE" "\$@"
+EOF
+	cat > "$TOOLS/bash" <<EOF
+#!/bin/sh
+exec "$GBASH" "\$@"
+EOF
+	cat > "$TOOLS/nproc" <<EOF
+#!/bin/sh
+echo "$NCPU"
+EOF
+	ln -sf "$PYTHON" "$TOOLS/python3"
+	chmod +x "$TOOLS/make" "$TOOLS/bash" "$TOOLS/nproc"
+	export PATH="$TOOLS:$PATH"
+	export HOSTCFLAGS="${HOSTCFLAGS:-} -I$OPENSSL/include"
+	export HOSTLDFLAGS="${HOSTLDFLAGS:-} -L$OPENSSL/lib"
+	export PKG_CONFIG_PATH="$OPENSSL/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+	JOBS=${JOBS:-$NCPU}
+else
+	JOBS=${JOBS:-$(nproc)}
+fi
+
+MAKE=${MAKE:-make}
+"$MAKE" -C "$UB" -s O="$OUT" CROSS_COMPILE="$CROSS_COMPILE" "$UBOOT_DEFCONFIG"
+"$MAKE" -C "$UB" -s O="$OUT" CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS"
+
+IMAGE="$OUT/u-boot.bin"
+[ -s "$IMAGE" ] || { echo "build.sh: U-Boot did not produce $IMAGE" >&2; exit 1; }
+if [ "$(dd if="$IMAGE" bs=1 count=4 skip=56 2>/dev/null)" != "ARMd" ]; then
+	echo "build.sh: $IMAGE has no AArch64 Linux image header" >&2
+	exit 1
+fi
+ls -lh "$IMAGE"
+echo "build.sh: profile $PROFILE built"
+echo "build.sh: U-Boot: $IMAGE"
+echo "build.sh: DTB:    ${DEVICE_FIRMWARE:-$UEFI_ROOT/local-firmware}/$FIRMWARE_DIR/$PROFILE_DTB"

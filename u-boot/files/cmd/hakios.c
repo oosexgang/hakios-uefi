@@ -13,8 +13,7 @@
  *   - U-Boot's own fastboot buffer, from the host: fastboot stage x.hkub; fastboot oem run:hakios load fastboot
  *   - anywhere else in RAM: hakios load ADDR [SIZE] (a container or a payload says its own size)
  *
- * A bare XNUP payload or a bare loader.efi is taken too, so that one of them can be changed without the other; a payload
- * with an entry "loader.efi" (the one xl enter makes for Silicium's boot manager) brings its loader with it.
+ * A bare XNUP payload or a bare loader.efi is taken too, so either can be changed independently.
  *
  *   HKUB container, little-endian:
  *     u32 magic "HKUB", u32 version (1), u32 count, u32 header size
@@ -116,26 +115,6 @@ static int take_loader(const void *data, ulong size)
 	return 0;
 }
 
-/*
- * The loader inside the payload, as an entry "loader.efi": what Silicium's boot manager starts (xl enter puts it
- * there). Entries: char name[16], u32 size, u32 reserved, the data padded to 16 bytes; an empty name ends them.
- */
-static int take_loader_from_payload(const u8 *data, ulong size)
-{
-	ulong off = 8, end = 8 + ((const u32 *)data)[1];
-
-	while (off + 24 <= end && data[off]) {
-		u32 n = *(const u32 *)(data + off + 16);
-
-		if (n > end - off - 24)
-			break;
-		if (!strncmp((const char *)data + off, "loader.efi", 16))
-			return take_loader(data + off + 24, n);
-		off += 24 + ALIGN(n, 16);
-	}
-	return -ENOENT;
-}
-
 static int take_payload(const void *data, ulong size)
 {
 	const u32 *head = data;
@@ -160,8 +139,6 @@ static int take_payload(const void *data, ulong size)
 	flush_dcache_range(PAYLOAD_BASE, PAYLOAD_BASE + ALIGN(size, ARCH_DMA_MINALIGN));
 	payload_size = size;
 	printf("[oosexgang] hakios: payload of %lu bytes at %#lx\n", size, PAYLOAD_BASE);
-	/* a payload that carries its loader needs no other; one that does not keeps the loader there was */
-	take_loader_from_payload(data, size);
 	return 0;
 }
 

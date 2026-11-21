@@ -1,28 +1,56 @@
 #!/bin/bash
-# HakiOS's U-Boot: Das U-Boot at the release in BASE, with HakiOS's changes on top, and the U-Boot files of each device
-# that has some (devices/<name>/u-boot/files/: its device tree, defconfig and environment). The result is u-boot/ at the
-# top of the repository, which u-boot/build.sh builds and tools/mkubootimg.py packs.
-#
-#   uefi/u-boot/apply.sh [DEVICE...]      default: every device with a devices/<name>/u-boot/files/
-#
-# What HakiOS adds to U-Boot (hakios.patch, files/):
-#   cmd/hakios.c     the hakios command: the HakiOS loader and its payload from memory (ABL's ramdisk or the fastboot
-#                    buffer), the payload to 0xF0000000, the loader started with bootefi
-set -e
-HERE=$(cd "$(dirname "$0")" && pwd)     # not resolved: uefi/ may be a link to a checkout elsewhere
-ROOT=$(dirname "$(dirname "$HERE")")
-UB=${U_BOOT:-$ROOT/u-boot}
-[ -e "$UB" ] && { echo "u-boot/apply.sh: $UB already exists (u-boot/export.sh saves what is in it; move it away for a fresh one)"; exit 1; }
-git clone -q --depth 1 -b "$(cat "$HERE/BASE")" https://source.denx.de/u-boot/u-boot.git "$UB"
-git -C "$UB" apply --whitespace=nowarn "$HERE/hakios.patch"
-cp -r "$HERE/files/." "$UB/"
-devices=("$@")
-if [ ${#devices[@]} -eq 0 ]; then
-	for d in "$ROOT"/devices/*/u-boot/files; do [ -d "$d" ] && devices+=("$(basename "$(dirname "$(dirname "$d")")")"); done
+# Prepare pinned U-Boot with shared HakiOS changes and one board profile.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+UEFI_ROOT=$(cd "$HERE/.." && pwd)
+PROFILE=${1:-qualcomm/redwood}
+if [[ ! "$PROFILE" =~ ^[a-z0-9_-]+/[a-z0-9_-]+$ ]]; then
+	echo "apply.sh: profile must be vendor/device, got '$PROFILE'" >&2
+	exit 2
 fi
-for d in "${devices[@]}"; do
-	[ -d "$ROOT/devices/$d/u-boot/files" ] || { echo "u-boot/apply.sh: devices/$d has no u-boot/files/" >&2; exit 1; }
-	cp -r "$ROOT/devices/$d/u-boot/files/." "$UB/"
-	echo "u-boot/apply.sh: the files of $d"
-done
-echo "u-boot/apply.sh: done; build with: uefi/u-boot/build.sh <device>"
+PROFILE_DIR="$UEFI_ROOT/platform/$PROFILE"
+if [ ! -f "$PROFILE_DIR/profile.env" ]; then
+	echo "apply.sh: no buildable profile at platform/$PROFILE/profile.env" >&2
+	exit 2
+fi
+# Profile files only contain assignments maintained in this repository.
+source "$PROFILE_DIR/profile.env"
+DEVICE=${PROFILE#*/}
+UB=${U_BOOT:-$UEFI_ROOT/build/u-boot-$DEVICE-src}
+TAG=$(cat "$HERE/BASE")
+PIN=$(cat "$HERE/BASE_COMMIT")
+URL=${U_BOOT_URL:-https://source.denx.de/u-boot/u-boot.git}
+
+if [ ! -d "$UB/.git" ]; then
+	if [ -e "$UB" ]; then
+		echo "apply.sh: $UB exists but is not a Git checkout" >&2
+		exit 1
+	fi
+	mkdir -p "$(dirname "$UB")"
+	git clone --quiet --depth 1 --branch "$TAG" "$URL" "$UB"
+fi
+
+actual=$(git -C "$UB" rev-parse HEAD)
+if [ "$actual" != "$PIN" ]; then
+	echo "apply.sh: expected U-Boot $TAG at $PIN, found $actual in $UB" >&2
+	exit 1
+fi
+
+if git -C "$UB" apply --check "$HERE/patches/hakios.patch" 2>/dev/null; then
+	git -C "$UB" apply --whitespace=nowarn "$HERE/patches/hakios.patch"
+elif ! grep -q 'config CMD_HAKIOS' "$UB/cmd/Kconfig" || ! grep -q 'EFI_QCOM_USB_DEVICE' "$UB/lib/efi_loader/Kconfig"; then
+	echo "apply.sh: patch does not apply cleanly to the pinned source" >&2
+	exit 1
+fi
+
+cp -R "$HERE/files/." "$UB/"
+FAMILY_DIR="$UEFI_ROOT/platform/${PROFILE%%/*}/common/u-boot/files"
+if [ -d "$FAMILY_DIR" ]; then
+	cp -R "$FAMILY_DIR/." "$UB/"
+fi
+BOARD_DIR="$PROFILE_DIR/u-boot/files"
+if [ -d "$BOARD_DIR" ]; then
+	cp -R "$BOARD_DIR/." "$UB/"
+fi
+echo "apply.sh: U-Boot $TAG prepared for $PROFILE at $UB"

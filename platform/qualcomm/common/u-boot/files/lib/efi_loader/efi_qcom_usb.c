@@ -5,7 +5,7 @@
  * Qualcomm's UEFI (and ABL's fastboot on top of it) drives the USB controller as a device through this protocol: the
  * caller hands over its descriptors once (StartEx), queues one transfer per endpoint at a time (Send) and polls for what
  * happened (HandleEvent). The HakiOS loader speaks fastboot to the host through it (xnuloader/loader.c, usb_start()),
- * so with this protocol the loader runs under U-Boot exactly as it does under Qualcomm's UEFI or Project Silicium's.
+ * so the loader can use the same fastboot recovery path under U-Boot and Qualcomm's UEFI.
  *
  * The interface is the one published in Qualcomm's open-source ABL, QcomModulePkg/Include/Protocol/EFIUsbDevice.h.
  * What is implemented is what a caller of it needs: one configuration, bulk endpoints, high speed. The control endpoint

@@ -1,0 +1,11 @@
+# Vendor firmware and downloaded upstream worktrees stay local.
+/local-firmware/
+/build/
+*.img
+*.fd
+*.dtb
+*.bin
+*.efi
+*.o
+*.obj
+__pycache__/
